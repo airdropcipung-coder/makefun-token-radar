@@ -188,6 +188,11 @@ function numOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+/** The number `n`, kept inside `[lo, hi]`. */
+function clampValue(n: number, lo: number, hi: number): number {
+  return n < lo ? lo : n > hi ? hi : n;
+}
+
 /** The median of a non-empty list. */
 function medianOf(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -237,8 +242,7 @@ export function categoryMultiple(
     .filter((p) => p.category !== null && p.category === protocol.category)
     .map((p) => p.mcap_usd! / p.tvl_usd);
   const raw = peers.length >= model.min_category_peers ? medianOf(peers) : global;
-  const clamp = (n: number): number => Math.min(model.multiple_cap, Math.max(model.multiple_floor, n));
-  return { multiple: clamp(raw), global: clamp(global) };
+  return { multiple: clampValue(raw, model.multiple_floor, model.multiple_cap), global: clampValue(global, model.multiple_floor, model.multiple_cap) };
 }
 
 /** The maturity multiplier: how long the protocol has run with no token. */
@@ -253,7 +257,7 @@ export function maturityMultiplier(age: number | null, model: ModelConstants): n
 
 /** The breadth multiplier: more chains, a little more value. */
 export function breadthMultiplier(chains: string[], model: ModelConstants): number {
-  return 1 + model.breadth_per_chain * Math.min(Math.max(chains.length - 1, 0), model.breadth_max_chains);
+  return 1 + model.breadth_per_chain * clampValue(chains.length - 1, 0, model.breadth_max_chains);
 }
 
 /** The multipliers and the implied value one protocol gets under this model. */
@@ -274,7 +278,7 @@ export function impliedValue(
   const age = ageDays(snapshot.as_of, protocol.listed_at);
   const { multiple, global } = categoryMultiple(protocol, snapshot, model);
   const rawGrowth = numOr(protocol.change_7d, 0);
-  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
+  const growthPct = clampValue(rawGrowth, model.growth_floor, model.growth_cap);
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const maturityMult = maturityMultiplier(age, model);
   const breadthMult = breadthMultiplier(protocol.chains, model);

@@ -193,6 +193,10 @@
     else window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }
 
+  /** The pre-token rows the board shows now: filtered, then in sort order. */
+  function rowsForTab() {
+    return orderedRows(visibleRows());
+  }
   function visibleRows() {
     var q = state.q.trim().toLowerCase();
     return DATA.rows.filter(function (r) {
@@ -294,7 +298,7 @@
       h('div', { class: 'field' }, h('label', { for: 'chain', text: 'Chain' }), chainSel),
       h('label', { class: 'check', for: 'wl' }, wl, h('span', { text: 'Watchlist only' })),
       h('div', { class: 'field' }, h('span', { class: 'sub', text: 'Token status' }), h('div', { class: 'tabs' }, pre, live)),
-      h('span', { class: 'count', text: state.tab === 'pre-token' ? visibleRows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
+      h('span', { class: 'count', text: state.tab === 'pre-token' ? rowsForTab().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
     );
   }
 
@@ -308,7 +312,7 @@
   }
 
   function boardView() {
-    var list = orderedRows(visibleRows());
+    var list = rowsForTab();
     if (list.length === 0) {
       return h('div', { class: 'panel' }, h('div', { class: 'empty' },
         h('h2', { text: 'No protocol matches that filter' }),

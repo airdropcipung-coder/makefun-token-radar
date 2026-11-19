@@ -5,8 +5,8 @@
 [![reward](https://make.fun/badge/token-radar-01/airdropcipung-coder/makefun-token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
 A token launch radar for make.fun's "Build the best token launch radar" bounty ($1,325 in USDC).
-It reads a sealed snapshot of the protocol universe from DefiLlama, ranks the protocols that
-record no token by an implied value, and shows a reader how to farm each one.
+It reads a sealed snapshot of the protocol universe from DefiLlama, ranks every protocol that
+has no token by an implied value, and shows the reader how to farm each one.
 
 ## The model (radar-2)
 
@@ -18,20 +18,22 @@ implied = round( tvl_usd x category multiple
                  x maturity(age) x (1 + 0.02 x min(chains - 1, 4)) )
 ```
 
-- **Category multiple** — the median market cap per dollar of TVL of the live protocols in the
-  same category (3 or more peers), else the median over every live protocol (0.21x on this
-  snapshot), clamped to [0.05, 1.50]. Computed from the snapshot at run time, never a table of
-  names.
-- **Growth** — seven-day TVL change, clamped so one outlier week cannot decide the board.
+- **Category multiple** — the median market cap per dollar of TVL among the live protocols in
+  the same category (3 or more peers), else the median over every live protocol (0.21x on this
+  snapshot), clamped to [0.05, 1.50]. It is computed from the snapshot at run time, never from
+  a table of names.
+- **Growth** — the seven-day TVL change, clamped so that one outlier week cannot decide the
+  board.
 - **Maturity** — how long the protocol has run with no token: under 90 days it is unproven
-  (0.75x), 90–1,095 days it ramps 0.80x–1.00x, past 1,095 days it holds at 1.00x, past 1,500 days
-  it eases to 0.95x.
+  (0.75x), from 90 to 1,095 days it ramps from 0.80x to 1.00x, past 1,095 days it holds at
+  1.00x, and past 1,500 days it eases to 0.95x.
 - **Breadth** — a protocol live on more chains is worth a little more.
 
-The board covers all 40 watchlist protocols and adds all 186 rankable pre-token protocols
-below the $50M floor: 226 rows. Live-token protocols are set aside with their market
-caps shown, never mixed into the ranking. Every row carries a 7-step farm plan with what each
-step costs and how long it takes, derived from the protocol's own category, chains, TVL and age.
+The board covers all 40 watchlist protocols and adds every rankable pre-token protocol below
+the $50M floor, 186 of them: 226 rows. Live-token protocols are set aside with their market
+caps shown and never mixed into the ranking. Every row carries a 7-step farm plan with what
+each step costs and how long it takes, derived from the protocol's own category, chains, TVL
+and age.
 
 ## The dashboard
 
@@ -47,7 +49,7 @@ mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <kit>/input/snapshot
 ```
 
 Node 22 or newer, standard library only. `main.ts` writes `board.json`, `data.js`,
-`dashboard/`, `screenshots/` and `dossier.json` to the output directory, and runs twice with
+`dashboard/`, `screenshots/` and `dossier.json` to the output directory, and two runs produce
 identical bytes.
 
 ## Files
