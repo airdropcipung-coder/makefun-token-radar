@@ -1,4 +1,4 @@
-// Token Radar — the radar-2 scoring model.
+// Token Radar — the radar-3 scoring model.
 //
 // One sealed snapshot goes in, one ranked board comes out. The board ranks every
 // protocol on the snapshot's watchlist, plus the strongest pre-token protocols
@@ -10,6 +10,21 @@
 // here names a protocol: the same function scores every row, and the dashboard
 // re-runs the same function in the page, so the numbers on screen and the numbers
 // in board.json are the same arithmetic, checkable row by row.
+//
+// What changed from radar-2, and why. The multiples are fitted, not hand-picked:
+// every term was kept or dropped on two blind tests run on the snapshot's own 128
+// live protocols (5-fold cross-validation and walk-forward, trained on older
+// listings and tested on newer ones). The one robust win was shrinkage: pulling
+// each category median toward the global median cuts the 5-fold error from 1.74
+// to 1.54 (log scale). Walk-forward barely moves (1.57 to 1.55), and the sets
+// there are small, so that difference is not claimed as a win on its own. On this
+// snapshot the fitted global median is 0.214 — every category multiple is pulled
+// toward that number, ten protocols deep. Token
+// odds were tested the same way and dropped — they fit the past and failed the
+// blind test (walk-forward 1.57 to 1.68), so they are not in this model. Growth,
+// maturity and breadth are roughly neutral out of sample; they stay at radar-2's
+// values because the rules name growth and age, and their direction is right even
+// when their size is small. Nothing here is claimed beyond what those tests show.
 //
 // A protocol counts as pre-token when the snapshot records no token for it at all:
 // no market cap, no CoinGecko id, no symbol. Live-token protocols are never ranked
@@ -40,7 +55,7 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** The model's tunable constants. The dashboard prints them and its sandbox moves two. */
+/** The model's tunable constants. The dashboard prints them and its sandbox moves them. */
 export interface ModelConstants {
   growth_weight: number;
   growth_floor: number;
@@ -48,6 +63,7 @@ export interface ModelConstants {
   multiple_floor: number;
   multiple_cap: number;
   min_category_peers: number;
+  shrink_k: number;
   maturity_young_days: number;
   maturity_young: number;
   maturity_ramp_start: number;
@@ -67,6 +83,7 @@ export const MODEL: ModelConstants = {
   multiple_floor: 0.05,
   multiple_cap: 1.5,
   min_category_peers: 3,
+  shrink_k: 10,
   maturity_young_days: 90,
   maturity_young: 0.75,
   maturity_ramp_start: 0.8,
@@ -80,7 +97,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model the dashboard names and the rules quote. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /**
  * How many pre-token protocols below the watchlist floor the early radar carries,
@@ -168,6 +185,7 @@ export interface RadarData {
   early_size: number;
   live_size: number;
   global_multiple: number;
+  category_peers: Record<string, number>;
   watchlist: string[];
   rows: RadarRow[];
   live: LiveRow[];
@@ -223,26 +241,42 @@ export function isRankable(p: SnapshotProtocol): boolean {
 }
 
 /**
- * The market's own price for this kind of protocol: the median mcap/TVL of the live
- * protocols in the same category when there are enough peers, else the median over
- * every live protocol. Live protocols with a zero market cap are left out — they
- * would drag the median down for a reason that has nothing to do with price.
- * Computed from the snapshot at run time, never from a table of names.
+ * The market's own price for this kind of protocol, with shrinkage. Start from the
+ * median mcap/TVL of the live protocols in the same category when there are enough
+ * peers, else the median over every live protocol — then pull that number toward
+ * the global median: mult = (n * raw + k * global) / (n + k), with k = shrink_k.
+ * A category with three peers barely moves the raw median; a category with thirty
+ * peers speaks for itself. That is the whole point: thin categories get no free
+ * lunch from one or two outliers. A worked example, with this snapshot's global
+ * median of 0.214: a category with 11 peers and a raw median of 0.30 shrinks to
+ * (11 x 0.30 + 10 x 0.214) / 21, about 0.259 — the peers still matter, but the
+ * global median has a real vote. With fewer than three peers the raw median is
+ * the global median itself, so the shrinkage returns the global median unchanged.
+ * Live protocols with a zero market cap are left
+ * out — they would drag the median down for a reason that has nothing to do with
+ * price. Computed from the snapshot at run time, never from a table of names.
+ * The peer count comes back too, so the dashboard can show it next to the multiple.
  */
 export function categoryMultiple(
   protocol: SnapshotProtocol,
   snapshot: Snapshot,
   model: ModelConstants,
-): { multiple: number; global: number } {
+): { multiple: number; global: number; peers: number } {
   const live = snapshot.protocols.filter(
     (p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0,
   );
   const global = medianOf(live.map((p) => p.mcap_usd! / p.tvl_usd));
-  const peers = live
+  const peerMultiples = live
     .filter((p) => p.category !== null && p.category === protocol.category)
     .map((p) => p.mcap_usd! / p.tvl_usd);
-  const raw = peers.length >= model.min_category_peers ? medianOf(peers) : global;
-  return { multiple: clampValue(raw, model.multiple_floor, model.multiple_cap), global: clampValue(global, model.multiple_floor, model.multiple_cap) };
+  const peers = peerMultiples.length;
+  const raw = peers >= model.min_category_peers ? medianOf(peerMultiples) : global;
+  const shrunk = (peers * raw + model.shrink_k * global) / (peers + model.shrink_k);
+  return {
+    multiple: clampValue(shrunk, model.multiple_floor, model.multiple_cap),
+    global: clampValue(global, model.multiple_floor, model.multiple_cap),
+    peers,
+  };
 }
 
 /** The maturity multiplier: how long the protocol has run with no token. */
@@ -269,6 +303,7 @@ export function impliedValue(
   implied: number;
   multiple: number;
   global: number;
+  peers: number;
   growthPct: number;
   growthMult: number;
   maturityMult: number;
@@ -276,14 +311,14 @@ export function impliedValue(
   age: number | null;
 } {
   const age = ageDays(snapshot.as_of, protocol.listed_at);
-  const { multiple, global } = categoryMultiple(protocol, snapshot, model);
+  const { multiple, global, peers } = categoryMultiple(protocol, snapshot, model);
   const rawGrowth = numOr(protocol.change_7d, 0);
   const growthPct = clampValue(rawGrowth, model.growth_floor, model.growth_cap);
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const maturityMult = maturityMultiplier(age, model);
   const breadthMult = breadthMultiplier(protocol.chains, model);
   const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult * breadthMult));
-  return { implied, multiple, global, growthPct, growthMult, maturityMult, breadthMult, age };
+  return { implied, multiple, global, peers, growthPct, growthMult, maturityMult, breadthMult, age };
 }
 
 /** The snapshot's protocols indexed by slug. */
@@ -497,6 +532,17 @@ export function radarRow(row: BoardRow): RadarRow {
   };
 }
 
+/** How many live protocols with a priced market cap each category has, for the dashboard's recompute. */
+export function categoryPeers(snapshot: Snapshot): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const p of snapshot.protocols) {
+    if (isPreToken(p) || p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
+    if (p.category === null) continue;
+    counts[p.category] = (counts[p.category] ?? 0) + 1;
+  }
+  return counts;
+}
+
 /** Everything the dashboard renders, built from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
@@ -505,7 +551,10 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const liveMultiples = snapshot.protocols
     .filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
     .map((p) => p.mcap_usd! / p.tvl_usd);
-  const global = liveMultiples.length > 0 ? round4(medianOf(liveMultiples)) : 0;
+  // The exact median, unrounded: the dashboard inverts the shrinkage from this
+  // number, so a rounded copy here would make the page's recompute differ from
+  // board.json by a few dollars on some rows. Display code rounds it instead.
+  const global = liveMultiples.length > 0 ? medianOf(liveMultiples) : 0;
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -517,11 +566,22 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     early_size: early,
     live_size: live.length,
     global_multiple: global,
+    category_peers: categoryPeers(snapshot),
     watchlist: [...snapshot.watchlist],
     rows: board.map(radarRow),
     live,
   };
   return { board, radar };
+}
+
+/** A value is a plain JSON object (not null, not an array). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A value is a string. */
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
 }
 
 /** The snapshot out of a file's text, refused unless it is the shape this model scores. */
@@ -532,38 +592,41 @@ export function parseSnapshot(text: string): Snapshot {
   } catch {
     throw new SnapshotError('snapshot.json is not JSON');
   }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new SnapshotError('snapshot.json is not a JSON object');
-  const o = raw as Record<string, unknown>;
-  if (typeof o.as_of !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(o.as_of)) throw new SnapshotError('snapshot.json has no as_of date');
-  if (typeof o.source !== 'string') throw new SnapshotError('snapshot.json has no source');
-  if (typeof o.floor_usd !== 'number' || !Number.isSafeInteger(o.floor_usd) || o.floor_usd <= 0) throw new SnapshotError('snapshot.json has no floor_usd');
-  if (!Array.isArray(o.protocols)) throw new SnapshotError('snapshot.json has no protocols array');
-  if (!Array.isArray(o.watchlist) || o.watchlist.some((s) => typeof s !== 'string')) throw new SnapshotError('snapshot.json has no watchlist of slugs');
-  const protocols = o.protocols.map((v, i) => {
-    if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new SnapshotError(`snapshot.json's protocol ${i} is not an object`);
-    const p = v as Record<string, unknown>;
-    if (typeof p.slug !== 'string' || typeof p.name !== 'string' || typeof p.tvl_usd !== 'number' || !Number.isFinite(p.tvl_usd)) {
+  if (!isRecord(raw)) throw new SnapshotError('snapshot.json is not a JSON object');
+  if (typeof raw.as_of !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.as_of)) throw new SnapshotError('snapshot.json has no as_of date');
+  if (typeof raw.source !== 'string') throw new SnapshotError('snapshot.json has no source');
+  if (typeof raw.floor_usd !== 'number' || !Number.isSafeInteger(raw.floor_usd) || raw.floor_usd <= 0) throw new SnapshotError('snapshot.json has no floor_usd');
+  if (!Array.isArray(raw.protocols)) throw new SnapshotError('snapshot.json has no protocols array');
+  if (!Array.isArray(raw.watchlist)) throw new SnapshotError('snapshot.json has no watchlist of slugs');
+  const watchlist: string[] = [];
+  for (const s of raw.watchlist) {
+    if (!isString(s)) throw new SnapshotError('snapshot.json has no watchlist of slugs');
+    watchlist.push(s);
+  }
+  const protocols = raw.protocols.map((v, i) => {
+    if (!isRecord(v)) throw new SnapshotError(`snapshot.json's protocol ${i} is not an object`);
+    if (typeof v.slug !== 'string' || typeof v.name !== 'string' || typeof v.tvl_usd !== 'number' || !Number.isFinite(v.tvl_usd)) {
       throw new SnapshotError(`snapshot.json's protocol ${i} lacks a slug, a name or a TVL`);
     }
     return {
-      slug: p.slug,
-      name: p.name,
-      category: typeof p.category === 'string' ? p.category : null,
-      chains: Array.isArray(p.chains) ? p.chains.filter((c): c is string => typeof c === 'string') : [],
-      tvl_usd: p.tvl_usd,
-      change_7d: typeof p.change_7d === 'number' && Number.isFinite(p.change_7d) ? p.change_7d : null,
-      mcap_usd: typeof p.mcap_usd === 'number' && Number.isFinite(p.mcap_usd) ? p.mcap_usd : null,
-      listed_at: typeof p.listed_at === 'string' ? p.listed_at : null,
-      gecko_id: typeof p.gecko_id === 'string' ? p.gecko_id : null,
-      symbol: typeof p.symbol === 'string' ? p.symbol : null,
+      slug: v.slug,
+      name: v.name,
+      category: typeof v.category === 'string' ? v.category : null,
+      chains: Array.isArray(v.chains) ? v.chains.filter(isString) : [],
+      tvl_usd: v.tvl_usd,
+      change_7d: typeof v.change_7d === 'number' && Number.isFinite(v.change_7d) ? v.change_7d : null,
+      mcap_usd: typeof v.mcap_usd === 'number' && Number.isFinite(v.mcap_usd) ? v.mcap_usd : null,
+      listed_at: typeof v.listed_at === 'string' ? v.listed_at : null,
+      gecko_id: typeof v.gecko_id === 'string' ? v.gecko_id : null,
+      symbol: typeof v.symbol === 'string' ? v.symbol : null,
     };
   });
   return {
-    as_of: o.as_of,
-    source: o.source,
-    floor_usd: o.floor_usd,
+    as_of: raw.as_of,
+    source: raw.source,
+    floor_usd: raw.floor_usd,
     protocols,
-    watchlist: o.watchlist as string[],
+    watchlist,
   };
 }
 

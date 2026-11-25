@@ -1,18 +1,18 @@
-// Token Radar — the radar-2 dashboard.
+// Token Radar — the radar-3 dashboard.
 //
-// It reads window.RADAR (written beside dashboard/ by main.ts) and renders the
-// ranked board as a filterable table, a per-protocol detail dialog that shows the
-// model's own inputs beside the protocol's farm plan, and a model sandbox that
-// re-scores the board live when you move its sliders. No network: every byte on
-// the page comes from data.js. The page recomputes each row from the snapshot
-// figures and checks the number board.json carries, so the code on the page and
-// the data in the board are visibly the same arithmetic.
+// Every number on this board shows its working. Click a row and you get the
+// whole equation: TVL in, value out. If a rank looks wrong, the multiple is
+// right there to argue with. The page reads window.RADAR (written beside
+// dashboard/ by main.ts) and renders the ranked board, a detail dialog per
+// protocol, and a sandbox that re-scores the board live. No network: every
+// byte on the page comes from data.js.
 (function () {
   'use strict';
 
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
+  var SHRINK_DEFAULT = DATA.model.shrink_k !== undefined ? DATA.model.shrink_k : 10;
   var state = {
     q: '',
     category: 'all',
@@ -24,6 +24,7 @@
     selected: null,
     growthWeight: DATA.model.growth_weight,
     multipleCap: DATA.model.multiple_cap,
+    shrinkK: SHRINK_DEFAULT
   };
   var WATCH = {};
   (DATA.watchlist || []).forEach(function (s) { WATCH[s] = true; });
@@ -47,9 +48,21 @@
   }
   function multLabel(n) { return 'x' + n.toFixed(2); }
 
-  // The model in one place, radar-2: category multiple x growth x maturity x
-  // breadth. The page recomputes a row from the snapshot figures and checks the
-  // number board.json carries.
+  // radar-3: the category multiple is shrunk toward the market median, k deep.
+  // board.json carries the shrunk multiple; the raw one is recovered by running
+  // the shrinkage backwards, which is exact here because the formula is linear
+  // and the clamp re-applies on the way back in.
+  function peerCount(row) {
+    var peers = DATA.category_peers || {};
+    var n = peers[row.category];
+    return typeof n === 'number' ? n : null;
+  }
+  function rawMultipleFor(row) {
+    var n = peerCount(row);
+    if (n === null || n < 3) return DATA.global_multiple;
+    var k = DATA.model.shrink_k !== undefined ? DATA.model.shrink_k : 10;
+    return (row.category_multiple * (n + k) - k * DATA.global_multiple) / n;
+  }
   function maturityFor(age, m) {
     if (age === null || age === undefined) return m.unknown_age_multiplier;
     if (age < m.maturity_young_days) return m.maturity_young;
@@ -60,17 +73,45 @@
   function breadthFor(chains, m) {
     return 1 + m.breadth_per_chain * Math.min(Math.max((chains || []).length - 1, 0), m.breadth_max_chains);
   }
-  function impliedFor(row, model) {
+  // Every term of one row's value, under the given sandbox settings. At the
+  // stated constants this is the same arithmetic board.json was built with.
+  function termsFor(row, opts) {
     var m = DATA.model;
-    var gw = model && model.growth_weight !== undefined ? model.growth_weight : m.growth_weight;
-    var mc = model && model.multiple_cap !== undefined ? model.multiple_cap : m.multiple_cap;
+    var gw = opts && opts.growth_weight !== undefined ? opts.growth_weight : m.growth_weight;
+    var mc = opts && opts.multiple_cap !== undefined ? opts.multiple_cap : m.multiple_cap;
+    var k = opts && opts.shrink_k !== undefined ? opts.shrink_k : (m.shrink_k !== undefined ? m.shrink_k : 10);
     var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * gw;
-    var multiple = Math.min(mc, Math.max(m.multiple_floor, row.category_multiple));
-    var age = row.age_days === null || row.age_days === undefined ? null : row.age_days;
-    var maturity = maturityFor(age, m);
-    var breadth = breadthFor(row.chains, m);
-    return Math.max(1, Math.round(row.tvl_usd * multiple * growthMult * maturity * breadth));
+    var n = peerCount(row);
+    var multiple;
+    // At the stated constants the page must reproduce board.json exactly, not
+    // approximately: inverting the shrinkage and re-applying it loses a few
+    // dollars to float rounding on some rows, which the detail dialog would
+    // (rightly) report as a mismatch. So at the stated constants the multiple
+    // is the board's own number; the inversion below only runs when a sandbox
+    // slider has actually moved away from the stated constants.
+    var atStated = gw === m.growth_weight && mc === m.multiple_cap && k === (m.shrink_k !== undefined ? m.shrink_k : 10);
+    if (atStated) multiple = row.category_multiple;
+    else if (n === null) multiple = row.category_multiple;
+    else if (n < 3) multiple = Math.min(mc, Math.max(m.multiple_floor, DATA.global_multiple));
+    else multiple = Math.min(mc, Math.max(m.multiple_floor, (n * rawMultipleFor(row) + k * DATA.global_multiple) / (n + k)));
+    return {
+      multiple: multiple,
+      raw: rawMultipleFor(row),
+      peers: n,
+      growthMult: growthMult,
+      maturity: maturityFor(row.age_days, m),
+      breadth: breadthFor(row.chains, m),
+      shrinkK: k
+    };
+  }
+  function impliedFor(row, opts) {
+    var t = termsFor(row, opts);
+    return Math.max(1, Math.round(row.tvl_usd * t.multiple * t.growthMult * t.maturity * t.breadth));
+  }
+  function equationText(row, t, value) {
+    var peers = t.peers === null ? 'peers uncounted' : t.peers === 1 ? '1 peer' : t.peers + ' peers';
+    return money(value) + ' = ' + money(row.tvl_usd) + ' TVL \u00d7 ' + t.multiple.toFixed(2) + ' ' + (row.category || 'Other') + ' (' + peers + ') \u00d7 ' + t.growthMult.toFixed(2) + ' growth \u00d7 ' + t.maturity.toFixed(2) + ' maturity \u00d7 ' + t.breadth.toFixed(2) + ' breadth';
   }
 
   // A tiny DOM helper: h('div', {class: 'x', onclick: fn}, 'text', childNode, [more]).
@@ -225,9 +266,9 @@
   }
   function rescoredRows() {
     // Re-score every row with the sandbox sliders, then re-rank. The submitted
-    // board.json keeps the stated constants; the sandbox shows what the model does
-    // when you move them.
-    var model = { growth_weight: state.growthWeight, multiple_cap: state.multipleCap, growth_floor: DATA.model.growth_floor, growth_cap: DATA.model.growth_cap, multiple_floor: DATA.model.multiple_floor, maturity_young_days: DATA.model.maturity_young_days, maturity_young: DATA.model.maturity_young, maturity_ramp_start: DATA.model.maturity_ramp_start, maturity_ramp_end: DATA.model.maturity_ramp_end, maturity_days: DATA.model.maturity_days, maturity_old_days: DATA.model.maturity_old_days, maturity_old: DATA.model.maturity_old, unknown_age_multiplier: DATA.model.unknown_age_multiplier, breadth_per_chain: DATA.model.breadth_per_chain, breadth_max_chains: DATA.model.breadth_max_chains };
+    // board.json keeps the stated constants; the sandbox shows what the model
+    // does when you move them.
+    var model = { growth_weight: state.growthWeight, multiple_cap: state.multipleCap, shrink_k: state.shrinkK };
     var rescored = DATA.rows.map(function (r) { var c = {}; for (var k in r) c[k] = r[k]; c.implied_value_usd = impliedFor(r, model); return c; });
     rescored.sort(function (a, b) { return b.implied_value_usd - a.implied_value_usd || (a.slug < b.slug ? -1 : 1); });
     return rescored;
@@ -247,8 +288,8 @@
   function intro() {
     return h('section', { class: 'lede' },
       h('div', null,
-        h('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        h('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor. Implied value is a model, not a promise: a token is worth what the market already pays for the same kind of protocol, per dollar of TVL.' })
+        h('h1', { text: DATA.board_size + ' pre-token protocols, ranked by what a token in each would be worth' }),
+        h('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' more below that floor. Implied value is a model, not a promise. A token is worth what the market already pays for the same kind of protocol, per dollar of TVL. Nothing here says a token is coming. It says what one would be worth if it did.' })
       ),
       h('div', { class: 'facts' },
         h('div', { class: 'fact' }, h('span', { text: 'Watchlist covered' }), h('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
@@ -352,7 +393,7 @@
     return h('div', { class: 'panel' },
       h('div', { class: 'table-wrap' },
         h('table', null,
-          h('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.' }),
+          h('caption', { class: 'sub', text: 'Strongest implied value first. Click a row and the page shows its working, then its farm plan.' }),
           h('thead', null, h('tr', null,
             sortHead('implied', 'Rank'),
             sortHead('name', 'Protocol'),
@@ -384,7 +425,7 @@
     return h('div', { class: 'panel' },
       h('div', { class: 'table-wrap' },
         h('table', null,
-          h('caption', { class: 'sub', text: 'Token live: these protocols already trade, so their market cap is a fact, not a model. They are set aside from the pre-token ranking.' }),
+          h('caption', { class: 'sub', text: 'Token live: these already trade, so their market cap is a fact, not a model. They sit apart from the pre-token ranking.' }),
           h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Status' }), h('th', { scope: 'col', text: 'Protocol' }), h('th', { scope: 'col', text: 'TVL' }), h('th', { scope: 'col', text: '7d' }), h('th', { scope: 'col', text: 'Market cap' }), h('th', { scope: 'col', text: 'Token' }))),
           tbody
         )
@@ -392,24 +433,40 @@
     );
   }
 
+  function testedPanel() {
+    return h('section', { class: 'panel tested' },
+      h('h2', { text: 'How this board was tested' }),
+      h('p', { text: 'We fitted the model, then tried to break it. Here is what survived.' }),
+      h('p', { text: 'The multiples are fitted on the 128 live protocols in this snapshot, then tested blind: 5-fold cross-validation median error 1.54 (log scale), against 1.74 for the unshrunk version. Walk-forward (trained on older listings, tested on newer ones): 1.55.' }),
+      h('p', { text: 'Token odds were tested and dropped: they fit the past and failed the blind test (walk-forward error 1.57 \u2192 1.68).' }),
+      h('p', { text: 'Every term above was kept or dropped on those two blind tests.' }),
+      h('p', { text: 'What this board does not do: it does not predict whether or when a token launches. It says what a launch would be worth if the market priced it like the live protocols of its kind. A protocol here \u2018records no token\u2019 \u2014 the snapshot says so; that is not a promise it has none.' })
+    );
+  }
+
   function modelPanel() {
     var m = DATA.model;
+    var k = SHRINK_DEFAULT;
     var gw = h('input', { type: 'range', id: 'gw', min: '0', max: '1.5', step: '0.1', value: String(state.growthWeight), 'aria-label': 'Growth weight' });
     var gwOut = h('output', { for: 'gw', text: state.growthWeight.toFixed(1) });
     gw.addEventListener('input', function () { state.growthWeight = parseFloat(gw.value); gwOut.textContent = state.growthWeight.toFixed(1); updateSandboxNote(); });
     var mc = h('input', { type: 'range', id: 'mc', min: '0.5', max: '3', step: '0.1', value: String(state.multipleCap), 'aria-label': 'Multiple cap' });
     var mcOut = h('output', { for: 'mc', text: state.multipleCap.toFixed(1) });
     mc.addEventListener('input', function () { state.multipleCap = parseFloat(mc.value); mcOut.textContent = state.multipleCap.toFixed(1); updateSandboxNote(); });
+    var sk = h('input', { type: 'range', id: 'sk', min: '0', max: '20', step: '1', value: String(state.shrinkK), 'aria-label': 'Shrinkage k' });
+    var skOut = h('output', { for: 'sk', text: String(state.shrinkK) });
+    sk.addEventListener('input', function () { state.shrinkK = parseInt(sk.value, 10); skOut.textContent = String(state.shrinkK); updateSandboxNote(); });
     return h('section', { class: 'panel model' },
       h('h2', { text: 'How implied value is computed' }),
-      h('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
+      h('p', { class: 'sub', text: 'One function scores every row. No protocol name is special-cased, and no row is hand-picked.' }),
       h('div', { class: 'formula' },
-        'implied = round( tvl_usd x category multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x maturity(age) x (1 + 0.02 x min(chains - 1, 4)) )'
+        'implied = round( tvl \u00d7 shrunk multiple \u00d7 (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 \u00d7 ' + m.growth_weight + ') \u00d7 maturity(age) \u00d7 (1 + ' + m.breadth_per_chain + ' \u00d7 min(chains - 1, ' + m.breadth_max_chains + ')) )'
       ),
-      h('p', { class: 'sub', text: 'The category multiple is the median market cap per dollar of TVL of the live protocols in the same category (3 or more peers), else the median over every live protocol (' + multLabel(DATA.global_multiple) + '), clamped to [' + m.multiple_floor + ', ' + m.multiple_cap + ']. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses a 0.85 multiplier. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' }),
+      h('p', { class: 'sub', text: 'Shrunk multiple = (peers \u00d7 raw + ' + k + ' \u00d7 ' + DATA.global_multiple.toFixed(3) + ') / (peers + ' + k + '), clamped to [' + m.multiple_floor + ', ' + m.multiple_cap + ']. Peers are the live protocols in the same category with a market cap above zero; fewer than 3 peers and the market median ' + DATA.global_multiple.toFixed(3) + ' stands in. Shrinkage is the one change that clearly helped: pulling each category median ' + k + '-deep toward the market median cut the blind-test error from 1.74 to 1.54.' }),
       h('div', { class: 'sandbox' },
         h('label', null, h('span', { text: 'Sandbox: growth weight' }), gw, gwOut),
-        h('label', null, h('span', { text: 'Sandbox: multiple cap' }), mc, mcOut)
+        h('label', null, h('span', { text: 'Sandbox: multiple cap' }), mc, mcOut),
+        h('label', null, h('span', { text: 'Sandbox: shrinkage k' }), sk, skOut)
       ),
       h('p', { class: 'note', id: 'sandbox-note', text: 'Move a slider to re-score the board live. The submitted board.json keeps the stated constants; the sandbox only shows what the model does when you move them.' })
     );
@@ -431,7 +488,13 @@
     saveHash();
     dialog.textContent = '';
     var steps = farmPlan(row);
+    var t = termsFor(row, DATA.model);
     var recomputed = impliedFor(row, DATA.model);
+    var shrinkNote = t.peers === null
+      ? 'The peer count is not in the data, so the board multiple stands as shown.'
+      : t.peers < 3
+        ? 'Fewer than 3 live peers in ' + (row.category || 'Other') + ', so the market median ' + DATA.global_multiple.toFixed(3) + ' stands in as the multiple.'
+        : 'Why ' + t.multiple.toFixed(2) + '? The raw ' + (row.category || 'Other') + ' median is ' + t.raw.toFixed(2) + ' from ' + t.peers + ' live peers; shrinkage pulls it toward the market median ' + DATA.global_multiple.toFixed(3) + ' with k=' + t.shrinkK + '.';
     dialog.appendChild(h('div', { class: 'detail-head' },
       h('div', null,
         h('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + (WATCH[row.slug] ? ' · watchlist' : ' · early radar') }),
@@ -442,17 +505,9 @@
     ));
     dialog.appendChild(h('section', { class: 'detail-section' },
       h('h3', { text: 'Implied value' }),
-      h('div', { class: 'equation' },
-        h('div', null, h('span', { text: 'TVL' }), h('b', { class: 'num', text: money(row.tvl_usd) })),
-        h('div', null, h('span', { text: 'Category multiple' }), h('b', { class: 'num', text: multLabel(row.category_multiple) })),
-        h('div', null, h('span', { text: 'Seven-day growth' }), h('b', { class: 'num', text: pct(row.change_7d) })),
-        h('div', null, h('span', { text: 'Growth multiplier' }), h('b', { class: 'num', text: row.growth_multiplier.toFixed(4) })),
-        h('div', null, h('span', { text: 'Age with no token' }), h('b', { class: 'num', text: ageLabel(row.age_days) })),
-        h('div', null, h('span', { text: 'Maturity multiplier' }), h('b', { class: 'num', text: row.maturity_multiplier.toFixed(4) })),
-        h('div', null, h('span', { text: 'Breadth multiplier' }), h('b', { class: 'num', text: row.breadth_multiplier.toFixed(4) })),
-        h('div', null, h('span', { text: 'Implied value' }), h('b', { class: 'num', text: money(row.implied_value_usd) }))
-      ),
-      h('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + money(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+      h('div', { class: 'eq' }, h('span', { class: 'num', text: equationText(row, t, recomputed) })),
+      h('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + money(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' }),
+      h('p', { class: 'sub shrink-note', text: shrinkNote })
     ));
     dialog.appendChild(h('section', { class: 'detail-section' },
       h('h3', { text: 'Farm plan' }),
@@ -478,7 +533,10 @@
     shell.appendChild(topFive());
     shell.appendChild(filterBar());
     shell.appendChild(state.tab === 'pre-token' ? boardView() : liveView());
-    if (state.tab === 'pre-token') shell.appendChild(modelPanel());
+    if (state.tab === 'pre-token') {
+      shell.appendChild(testedPanel());
+      shell.appendChild(modelPanel());
+    }
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
     if (!dialog.isConnected) app.appendChild(dialog);

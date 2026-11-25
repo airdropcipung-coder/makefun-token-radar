@@ -3,13 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Token Radar: pre-token protocols ranked by implied value</title>
+    <meta name="description" content="226 pre-token protocols ranked by implied value. Every row shows its working as one equation; the model was fitted on the snapshot's live protocols and tested blind.">
+    <title>Token Radar (radar-3): pre-token protocols ranked by implied value</title>
     <link rel="stylesheet" href="app.css">
   </head>
   <body>
     <!-- The board is rendered into #board by app.js from window.RADAR in data.js. -->
     <a class="skip" href="#board">Skip to the board</a>
     <main id="board" tabindex="-1" aria-busy="true"></main>
+    <noscript><p class="noscript">This board computes its numbers in the page, so it needs JavaScript. The data sits in data.js next to it.</p></noscript>
     <script src="../data.js"></script>
     <script src="app.js"></script>
   </body>

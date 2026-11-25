@@ -1,8 +1,9 @@
-/* Token Radar, radar-2 theme. A dark radar room: deep navy canvas, amber sweep,
+/* Token Radar, radar-3 theme. A dark radar room: deep navy canvas, amber sweep,
    teal for growth, red for decline. The palette, the two radii and the two type
    families are the whole style; everything else is spacing, a hairline and a
    type step. Rules are grouped by what they style: the page, the shell, the
-   board table, the detail dialog, and the narrow-screen fallbacks. */
+   board table, the tested and model panels, the detail dialog, and the
+   narrow-screen fallbacks. */
 
 :root {
   --canvas: #0b1220;
@@ -95,6 +96,12 @@ a {
 .skip:focus {
   left: var(--step-4);
   top: var(--step-4);
+}
+.noscript {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: var(--step-5) var(--step-6);
+  color: var(--muted);
 }
 
 /* The shell: header, lede, top five, controls. */
@@ -364,10 +371,6 @@ th.num {
   color: var(--muted);
   white-space: nowrap;
 }
-.status.hot {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 .badge {
   display: inline-block;
   margin-left: 6px;
@@ -395,7 +398,23 @@ th.num {
   margin: var(--step-2) 0 var(--step-4);
 }
 
-/* The model and sandbox section below the board. */
+/* The tested panel and the model section below the board. */
+.tested {
+  margin-top: var(--step-5);
+  padding: var(--step-5);
+  border-left: 3px solid var(--accent);
+}
+.tested h2 {
+  margin-bottom: var(--step-2);
+}
+.tested p {
+  color: var(--muted);
+  max-width: 78ch;
+  margin-top: var(--step-2);
+}
+.tested p:first-of-type {
+  color: var(--ink);
+}
 .model {
   margin-top: var(--step-5);
   padding: var(--step-5);
@@ -416,7 +435,7 @@ th.num {
 }
 .sandbox {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--step-4);
   margin-top: var(--step-4);
 }
@@ -470,20 +489,23 @@ th.num {
 .detail-section:last-child {
   border-bottom: 0;
 }
-.equation {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--step-2) var(--step-4);
-  margin: var(--step-3) 0;
-}
-.equation > div {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--step-3);
+.eq {
+  font-family: var(--font-num);
   font-size: 14px;
+  line-height: 1.6;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-control);
+  padding: var(--step-3) var(--step-4);
+  margin: var(--step-3) 0;
+  overflow-x: auto;
 }
-.equation span {
-  color: var(--muted);
+.eq .num {
+  white-space: normal;
+}
+.shrink-note {
+  margin-top: var(--step-2);
 }
 .steps {
   margin: var(--step-3) 0 0;
@@ -522,7 +544,25 @@ th.num {
   .top5 {
     grid-template-columns: repeat(2, 1fr);
   }
-  .equation {
+}
+@media (max-width: 600px) {
+  .shell {
+    padding: var(--step-4) var(--step-4) var(--step-6);
+  }
+  .top {
+    flex-wrap: wrap;
+  }
+  .top-meta {
+    justify-content: flex-start;
+  }
+  .top5 {
     grid-template-columns: 1fr;
+  }
+  input[type="search"] {
+    min-width: 0;
+    width: 100%;
+  }
+  .count {
+    margin-left: 0;
   }
 }
